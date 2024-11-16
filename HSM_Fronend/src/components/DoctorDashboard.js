@@ -1,3 +1,4 @@
+//src/components/DoctorDashboard.js
 import React from 'react';
 import AppointmentCard from './AppointmentCard';
 

@@ -14,9 +14,15 @@ const LoginPage = ({ onLogin }) => {
         setSignup(false);
     };
 
+    const clearInputs = () => {
+        setUsername('');
+        setPassword('');
+    };
+
     const handleLogin = async () => {
         if (!username || !password || !userType) {
             alert('Please fill in all fields and select a user type.');
+            clearInputs();
             return;
         }
 
@@ -33,16 +39,19 @@ const LoginPage = ({ onLogin }) => {
                 localStorage.setItem('userType', userType);
                 onLogin(userType); // Pass the userType to the parent component
                 alert(response.data.message); // Display success message
+                clearInputs(); // Clear the form inputs after successful login
             }
         } catch (error) {
             console.error('Error logging in:', error);
-            alert(error.response?.data?.message || 'Login failed');
+            alert(error.response.data.error);
+            clearInputs(); // Clear the form inputs after login failure
         }
     };
 
     const handleSignup = async () => {
         if (!username || !password || !userType) {
             alert('Please fill in all fields and select a user type.');
+            clearInputs();
             return;
         }
 
@@ -56,10 +65,12 @@ const LoginPage = ({ onLogin }) => {
             if (response.status === 201) {
                 alert('Signup successful! You can now log in.');
                 setSignup(false); // Hide signup form after successful signup
+                clearInputs(); // Clear the form inputs after successful signup
             }
         } catch (error) {
             console.error('Error signing up:', error);
-            alert(error.response?.data?.message || 'Signup failed');
+            alert(error.response.data.error);
+            clearInputs(); // Clear the form inputs after signup failure
         }
     };
 

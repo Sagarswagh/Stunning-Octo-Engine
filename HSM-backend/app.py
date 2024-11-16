@@ -2,14 +2,20 @@ from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import SQLAlchemyError
 from flask_cors import CORS
-
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+import bleach  # For sanitizing user input to prevent XSS
+import re 
+from werkzeug.security import check_password_hash
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///appointments.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# Allow CORS for all routes
+# Initialize CORS and Limiter (for rate limiting)
 CORS(app)
+limiter = Limiter(get_remote_address, app=app)
 
 # Define the Appointment model
 class Appointment(db.Model):
@@ -31,14 +37,19 @@ class User(db.Model):
 def create_default_doctor():
     try:
         doctor_exists = User.query.filter_by(username='doctor').first()
+        print(doctor_exists)
         if not doctor_exists:
-            default_doctor = User(username='doctor', password='doctor', user_type='doctor')
+            default_doctor = User(username='doctor', password=generate_password_hash('doctor'), user_type='doctor')
             db.session.add(default_doctor)
             db.session.commit()
+        # else:
+        #     db.session.delete(doctor_exists)
+        #     db.session.commit()
     except SQLAlchemyError as e:
         db.session.rollback()
         print(f"Error creating default doctor: {e}")
 
+# Error Handlers for 404 and 500
 @app.errorhandler(404)
 def not_found_error(error):
     return jsonify({'error': 'Not found'}), 404
@@ -47,7 +58,9 @@ def not_found_error(error):
 def internal_error(error):
     return jsonify({'error': 'An internal error occurred'}), 500
 
+# Rate-limited route for handling appointments
 @app.route('/appointments', methods=['GET', 'POST'])
+@limiter.limit("50 per minute")  # Apply rate-limiting (50 requests per minute per IP)
 def manage_appointments():
     try:
         if request.method == 'GET':
@@ -70,13 +83,16 @@ def manage_appointments():
             
             if not all(key in data for key in ('doctor_name', 'patient_name', 'date')):
                 return jsonify({'error': 'Missing required fields'}), 400
-            
+
+            # Sanitize the notes field to prevent XSS
+            sanitized_notes = bleach.clean(data.get('notes', ''))
+
             new_appointment = Appointment(
                 doctor_name=data['doctor_name'],
                 patient_name=data['patient_name'],
                 date=data['date'],
                 status=data.get('status', 'Scheduled'),
-                notes=",".join(data['notes']) if data.get('notes') else ''
+                notes=",".join(sanitized_notes) if sanitized_notes else ''
             )
             db.session.add(new_appointment)
             db.session.commit()
@@ -87,7 +103,9 @@ def manage_appointments():
     except Exception as e:
         return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
 
+# Add Note to Appointment (with input sanitization)
 @app.route('/appointments/<int:appointment_id>/add-note', methods=['POST'])
+@limiter.limit("20 per minute") # Apply rate-limiting (20 requests per minute per IP)
 def add_note_to_appointment(appointment_id):
     try:
         appointment = Appointment.query.get(appointment_id)
@@ -98,14 +116,16 @@ def add_note_to_appointment(appointment_id):
         if not data or 'note' not in data:
             return jsonify({'error': 'No note provided'}), 400
         
-        new_note = data['note']
-        new_author = data.get('author', 'unknown')
+        # Sanitize the note to prevent XSS
+        new_note = bleach.clean(data['note'])
         
+        new_author = data.get('author', 'unknown')
+
         if appointment.notes:
             appointment.notes += ',' + new_note
         else:
             appointment.notes = new_note
-        
+
         db.session.commit()
         return jsonify({'message': 'Note added!'}), 200
     except SQLAlchemyError as e:
@@ -114,7 +134,9 @@ def add_note_to_appointment(appointment_id):
     except Exception as e:
         return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
 
+# Cancel Appointment (With rate limiting)
 @app.route('/appointments/<int:id>/cancel', methods=['PUT'])
+@limiter.limit("3 per minute") # Apply rate-limiting (3 requests per minute per IP)
 def cancel_appointment(id):
     try:
         appointment = Appointment.query.get(id)
@@ -134,33 +156,55 @@ def cancel_appointment(id):
     except Exception as e:
         return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
 
+
+
+
+# Dummy user database for illustration
+users = {}
+
+# Password validation regex (already provided)
+PASSWORD_REGEX = r'^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$'
+
+# Username validation: alphanumeric, not only numeric, and length between 3 and 20 characters
+USERNAME_REGEX = r'^[a-zA-Z][a-zA-Z0-9]{2,19}$'  # Starts with a letter, followed by alphanumeric characters
+
 @app.route('/signup', methods=['POST'])
 def signup():
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No input data provided'}), 400
-        
-        username = data.get('username')
-        password = data.get('password')
-        user_type = data.get('user_type')
-        
-        if not username or not password or not user_type:
-            return jsonify({'error': 'Missing required fields'}), 400
-        
-        existing_user = User.query.filter_by(username=username).first()
-        if existing_user:
-            return jsonify({'error': 'Username already exists'}), 400
-        
-        new_user = User(username=username, password=password, user_type=user_type)
-        db.session.add(new_user)
-        db.session.commit()
-        return jsonify({'message': 'User registered successfully!'}), 201
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        return jsonify({'error': 'Database error occurred', 'details': str(e)}), 500
-    except Exception as e:
-        return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
+    username = request.json.get('username')
+    password = request.json.get('password')
+    user_type = request.json.get('user_type')
+
+    # Validate input
+    if not username or not password or not user_type:
+        return jsonify({'error': 'Please provide username, password, and user type'}), 400
+
+    # Validate username format: must be alphanumeric and start with a letter
+    if not re.match(USERNAME_REGEX, username):
+        return jsonify({'error': 'Username must start with a letter, contain only letters and numbers, and be at least 3 characters long'}), 400
+
+    # Validate user_type
+    if user_type not in ['doctor', 'patient']:
+        return jsonify({'error': 'Invalid user type'}), 400
+
+    # Validate password format using regex
+    if not re.match(PASSWORD_REGEX, password):
+        return jsonify({
+            'error': 'Password must be at least 8 characters long, contain an uppercase letter, a lowercase letter, a number, and a special character.'
+        }), 400
+
+    # Check if the username already exists
+    if username in users:
+        return jsonify({'error': 'Username already exists'}), 400
+
+    # Hash password and store user data
+    hashed_password = generate_password_hash(password)
+    users[username] = {'password': hashed_password, 'user_type': user_type}
+
+    return jsonify({'message': f'{user_type.capitalize()} signed up successfully'}), 201
+
+
+
+# Login route with password validation
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -176,20 +220,24 @@ def login():
         if not username or not password or not user_type:
             return jsonify({'error': 'Missing required fields'}), 400
         
-        user = User.query.filter_by(username=username, password=password, user_type=user_type).first()
-        if user:
-            return jsonify({'message': f'{user.user_type.capitalize()} logged in successfully!'}), 200
+        # Check if user exists and the password is correct
+        if username in users and users[username]['user_type'] == user_type:
+            # Use check_password_hash to compare the stored password with the input password
+            if check_password_hash(users[username]['password'], password):
+                return jsonify({'message': f'{user_type.capitalize()} logged in successfully!'}), 200
+            else:
+                return jsonify({'error': 'Invalid credentials'}), 401
+        else:
+            return jsonify({'error': 'User does not exist or incorrect user type'}), 401
         
-        return jsonify({'error': 'Invalid credentials'}), 401
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        return jsonify({'error': 'Database error occurred', 'details': str(e)}), 500
     except Exception as e:
         return jsonify({'error': 'An unexpected error occurred', 'details': str(e)}), 500
 
+
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
-        create_default_doctor()
-    
+    with app.app_context():  # Set up the application context
+        db.create_all()       # Create tables
+        create_default_doctor()  # Ensure the default doctor is created at startup
+
     app.run(debug=True)
+

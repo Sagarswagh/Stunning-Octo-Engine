@@ -7,17 +7,48 @@ import axios from 'axios';
 const App = () => {
     const [appointments, setAppointments] = useState([]);
     const [userType, setUserType] = useState(null);
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    let timer; // Define timer outside useEffect
 
     useEffect(() => {
-        // Check if user is logged in
-        const storedUserType = localStorage.getItem('userType');
-        if (storedUserType) {
-            setUserType(storedUserType);
-        }
+        const checkAuthStatus = () => {
+            const storedUserType = localStorage.getItem('userType');
+            const storedUsername = localStorage.getItem('username');
+            if (storedUserType && storedUsername) {
+                setIsAuthenticated(true);
+                setUserType(storedUserType);
+            }
+        };
 
-        // Fetch appointments on initial load
+        // Check authentication status and fetch appointments
+        checkAuthStatus();
         fetchAppointments();
-    }, []);
+
+        const resetTimer = () => {
+            // Clear previous timer and reset
+            if (timer) clearTimeout(timer);
+            // Set a new timer for 3 minutes (180000 ms)
+            timer = setTimeout(logout, 180000);
+        };
+
+        // Event listeners to reset the timer on user activity
+        const events = ['click', 'keydown', 'mousemove'];
+        events.forEach(event => window.addEventListener(event, resetTimer));
+
+        // Cleanup event listeners on component unmount
+        return () => {
+            events.forEach(event => window.removeEventListener(event, resetTimer));
+            clearTimeout(timer);
+        };
+    }, []); // Empty dependency array ensures this runs only once on mount
+
+    const logout = () => {
+        localStorage.removeItem('username');
+        localStorage.removeItem('userType');
+        setIsAuthenticated(false);
+        setUserType(null); // Clear user state
+        window.location.href = '/login'; // Redirect to login page
+    };
 
     const fetchAppointments = async () => {
         try {
@@ -48,7 +79,6 @@ const App = () => {
                 appointment.id === id ? { ...appointment, status: 'Cancelled' } : appointment
             )
         );
-        
     };
 
     const handleSubmitNote = async (id, newNote) => {
